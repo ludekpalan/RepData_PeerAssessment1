@@ -1,0 +1,205 @@
+---
+title: 'Reproducible Research: Peer Assessment 1'
+author: "Luděk Palán"
+date: "2025-09-09"
+output: html_document
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(readr)
+library(ggplot2)
+library(dplyr)
+
+```
+
+## Loading and preprocessing the data
+
+```{r}
+
+# Download file from URL and unzip 
+url <- "https://d396qusza40orc.cloudfront.net/repdata%2Fdata%2Factivity.zip"
+download.file(url, "dataset.zip", method = "curl")
+unzip("dataset.zip")
+
+# Import CSV file
+activity = readr::read_csv(
+  "activity.csv", 
+  col_types = cols(date = col_date(format = "%Y-%m-%d")))
+#head(activity,10)
+
+# Actvities per day - excluding missing variables
+ActivityPerDayExclMissing = activity %>%
+  dplyr::filter(!(is.na(steps))) %>%
+  dplyr::group_by(date) %>%
+  dplyr::summarise(
+    StepsPerDay = sum(steps),   # ,na.rm = TRUE
+    .groups = "drop"
+  ) %>%
+  dplyr::ungroup()
+
+my_comma = scales::comma_format(accuracy = 0.1,decimal.mark = ",", big.mark = " ")
+
+ActivityPerDayExclMissingMean = mean(ActivityPerDayExclMissing$StepsPerDay)
+ActivityPerDayExclMissingMedian = quantile(ActivityPerDayExclMissing$StepsPerDay,probs = 0.5)[1]
+
+ActivityPerDayExclMissingMeanPrint = my_comma(ActivityPerDayExclMissingMean)
+ActivityPerDayExclMissingMedianPrint = my_comma(ActivityPerDayExclMissingMedian)
+
+
+```
+
+## What is mean total number of steps taken per day?
+
+Mean total number of steps per day is `r ActivityPerDayExclMissingMeanPrint` (observations containing missing in umber of steps were excluded), and mesian is `r ActivityPerDayExclMissingMedianPrint`.
+
+
+```{r StepsPerInterval}
+
+grpHistStepsPerDay = ActivityPerDayExclMissing %>%
+  ggplot(mapping=aes(x=StepsPerDay)) +
+  geom_histogram(bins = 20) +
+  theme_light() +
+  labs(
+    title = "Histogram of the total number of steps taken each day",
+    x = "Steps taken each day"
+  )
+
+print(grpHistStepsPerDay)
+
+```
+
+## What is the average daily activity pattern?
+```{r}
+# Is there a time series plot of the average number of steps taken (averaged across all days) versus the 5-minute intervals?
+
+activity %>%
+  dplyr::group_by(interval) %>%
+  dplyr::summarise(AvgStepsPerInt = mean(steps,na.rm=TRUE)) %>%
+  ggplot(mapping = aes(x=interval, y=AvgStepsPerInt)) +
+  geom_line() +
+  theme_light() +
+  labs(
+    title = "Average daily activity pattern",
+    subtitle = "time series plot of the average number of steps taken (averaged across all days) versus the 5-minute intervals"
+  )
+
+
+```
+
+#The 5-minute interval that, on average, contains the maximum number of steps
+
+```{r IntMaxNumberOfSteps}
+
+ActivityPerIntExclMissing = activity %>%
+  dplyr::filter(!(is.na(steps))) %>%
+  dplyr::group_by(interval) %>%
+  dplyr::summarise(
+    StepsPerIntervalAvg = mean(steps),
+    .groups = "drop"
+  ) %>%
+  dplyr::ungroup()
+
+ActIntMaxNumAsteps = ActivityPerIntExclMissing %>%
+  dplyr::arrange(dplyr::desc(StepsPerIntervalAvg)) %>%
+  dplyr::slice_head(n=1)
+
+#print(ActIntMaxNumAsteps$interval)
+#print(ActIntMaxNumAsteps$StepsPerIntervalAvg)
+```
+
+The 5-minute interval which contains, on average, the maximum number of steps is `r ActIntMaxNumAsteps$interval`; the number of steps in this interval is `r ActIntMaxNumAsteps$StepsPerIntervalAvg`.
+
+
+
+## Imputing missing values
+Strategy : replace missing by average number of steps for the same weekday and same time interval, if it is not possiible, zero is used.
+```{r}
+
+ActImputMissing01 = activity %>%
+  dplyr::mutate(tWeekDay = weekdays(date))
+
+ActImputMissing02 = ActImputMissing01 %>%
+  dplyr::filter(!(is.na(steps))) %>%
+  dplyr::group_by(tWeekDay,interval) %>%
+  dplyr::summarise(
+    aStepsToInput = mean(steps, rm.na=TRUE),
+    .groups = "drop"
+  ) %>% 
+  dplyr::ungroup()
+
+ActImputMissing03 = ActImputMissing01 %>%
+  dplyr::left_join(
+    ActImputMissing02,
+    dplyr::join_by(tWeekDay,interval)
+  ) %>%
+  dplyr::mutate(
+    aStepsAftInput = dplyr::case_when(
+      !(is.na(steps)) ~ as.double(steps),
+      !(is.na(aStepsToInput)) ~ as.double(aStepsToInput),
+      TRUE ~ as.double(0)
+    )
+  )
+
+# Check if the all missing value are replaced
+ActImputMissing03 %>% dplyr::filter(is.na(aStepsAftInput))
+
+```
+
+
+# Histogram of the total number of steps taken each day after missing values are imputed
+```{r}
+ActImputMissing03 %>%
+  dplyr::group_by(date) %>%
+  dplyr::summarise(StepsPerDay = sum(aStepsAftInput), .groups = "drop") %>%
+  ggplot(mapping = aes(x=StepsPerDay)) +
+  geom_histogram(bins = 30) +
+  theme_light() +
+  labs(
+    title = "Histogram of the total number of steps taken each day after missing values are imputed",
+    x = "", y=""
+  )
+```
+
+
+## Are there differences in activity patterns between weekdays and weekends?
+```{r}
+# Panel plot comparing the average number of steps taken per 5-minute interval across weekdays and weekends
+
+ActivityReplaceMissingWeekEnds = ActImputMissing03 %>%
+  dplyr::mutate(
+    WeekDays = weekdays(date, abbreviate = FALSE),
+    fWeekends = dplyr::case_when(
+      WeekDays %in% c("Sunday","Saturday") ~ TRUE,
+      TRUE ~ FALSE
+    ),
+    tWeekEnds = factor(fWeekends,levels=c(TRUE,FALSE),labels=c("weekends","working days"))
+  ) 
+
+ActivityReplaceMissingWeekEndsMeans = ActivityReplaceMissingWeekEnds %>%
+  dplyr::group_by(tWeekEnds, interval) %>%
+  dplyr::summarise(
+    StepsPerIntervalMean = mean(aStepsAftInput),
+    .groups = "drop"
+  )
+
+ActivityReplaceMissingWeekEndsMeans %>%
+  ggplot(mapping = aes(x=interval, y = StepsPerIntervalMean )) +
+  geom_line() +
+  facet_wrap(.~tWeekEnds) +
+  theme_light() +
+  labs(
+    title = "Steps taken per 5-minute interval across weekdays and weekends",
+    x = "interval",
+    y = "steps taken per 5-minute interval"
+  )
+
+
+WeekEndsMean = my_comma(mean(ActivityReplaceMissingWeekEnds[ActivityReplaceMissingWeekEnds$fWeekends == TRUE,]$aStepsAftInput))
+WorkingDaysMean = my_comma(mean(ActivityReplaceMissingWeekEnds[ActivityReplaceMissingWeekEnds$fWeekends != TRUE,]$aStepsAftInput))
+
+```
+  
+Mean total number of steps per interval (after replacing missing values) in working days is `r WorkingDaysMean` and during weekend is `r WeekEndsMean`.
+
